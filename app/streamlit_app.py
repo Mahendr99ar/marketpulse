@@ -25,7 +25,7 @@ from marketpulse.regimes import regime_names
 st.set_page_config(page_title="MarketPulse", layout="wide")
 cfg = load_config()
 
-dataset = st.sidebar.radio("Dataset", ["demo", "real"], help="demo = synthetic data")
+dataset = st.sidebar.radio("Dataset", ["real", "demo"], help="real = market data 2007 to today, demo = synthetic data")
 backend = st.sidebar.selectbox("Brief writer", ["template", "ollama", "groq", "hf"])
 store = Store(cfg, dataset)
 

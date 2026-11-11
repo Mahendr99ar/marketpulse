@@ -5,10 +5,8 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 data/raw/
-# processed demo data is rebuilt by the app; real processed data is committed
-# so the hosted app can show it without API keys
-data/processed/*
-!data/processed/real/
+# processed data (real and demo) is committed so the hosted app only reads files
+# and never has to download data or fit models on the free server
 reports/
 mlruns/
 finetune/outputs/

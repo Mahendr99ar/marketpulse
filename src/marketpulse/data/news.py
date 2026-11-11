@@ -64,6 +64,12 @@ def fetch_gdelt(keywords: list[str], start: str, end: str, chunk_days: int = 3,
                 print(f"  {n}/{len(chunks)} chunks done, {got} headlines so far, {failed} skipped")
     except KeyboardInterrupt:
         print("\n[news] stopped by you. Chunks already downloaded are kept; rerun to continue.")
+    if cache_dir is not None:
+        # An early stop skips the loop over older chunks, so read every cached chunk in
+        # the range here. Without this a blocked run would save fewer headlines than
+        # are already on disk.
+        rows = [pd.read_parquet(cache_dir / f"{c.date()}.parquet") for c in chunks
+                if (cache_dir / f"{c.date()}.parquet").exists()]
     rows = [r for r in rows if len(r)]
     if not rows:
         return pd.DataFrame(columns=NEWS_COLUMNS)

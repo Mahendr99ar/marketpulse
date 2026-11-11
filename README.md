@@ -1,161 +1,238 @@
-# MarketPulse
+# MarketPulse: Regime-Aware Market Monitor with Fact-Checked Briefs
 
-Regime-aware detection of unusual market moves, with a daily brief that is fact-checked against the data before anyone reads it.
+[![CI](https://github.com/Mahendr99ar/marketpulse/actions/workflows/ci.yml/badge.svg)](https://github.com/Mahendr99ar/marketpulse/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.13-blue)
+[![Live app](https://img.shields.io/badge/Live%20app-Streamlit-red)](https://marketpulse-mahendra.streamlit.app)
 
-## The problem
+Author: [Mahendra Meena](https://github.com/Mahendr99ar)
 
-Every morning, analysts on a sales and trading desk write a short note on what moved overnight and why. Two parts of that job are slow or risky:
+Live app: https://marketpulse-mahendra.streamlit.app
 
-1. **Finding what matters.** Dozens of markets move every day. A 1% drop in the S&P 500 is news in a quiet market and noise in a crisis, so a fixed threshold either misses real moves or floods the desk with false alarms.
-2. **Trusting automated text.** An LLM can write the note in seconds, but it sometimes invents or swaps numbers. One wrong figure in a client note costs more than the time saved.
+Every morning an analyst on a trading desk writes a short note on what moved overnight and why.
+Two parts of that job are hard to automate. First, deciding which moves matter: a 1 % fall in
+the S&P 500 is news in a quiet market and noise in a crisis. Second, trusting generated text:
+an LLM can write the note in seconds, but if it swaps or invents one number the note is useless.
 
-MarketPulse handles both: it judges each move against the current market regime, and it lets an LLM write only after Python has computed every number, then checks the text before release.
-
-## How it works
+I built MarketPulse to handle both. It finds the current market regime with a Hidden Markov
+Model, scores each daily move against the volatility of that regime, and writes a short brief.
+Python computes and rounds every number; the writer only puts them into sentences; a
+fact-checker checks the text against the data before anyone reads it.
 
 ```
-FRED + Yahoo Finance ──> features ──> HMM regimes (walk-forward, filtered)
-                                              │
-daily changes ───────────────────────────────>├──> regime-conditional z-scores ──> unusual moves
-                                              │
-GDELT / RSS / central bank statements ──> retrieval (TF-IDF or embeddings) ──> likely driver
-                                                                                     │
-                     fact sheet (Python computes and rounds every number) <──────────┘
-                                   │
-                     LLM writes ──> fact-checker ──> pass: publish
-                         ^                │
-                         └── feedback ────┤ fail, retries left
-                                          └ fail, no retries: needs human review
+   FRED + Yahoo Finance (9 markets, 2007 to today)          GDELT headlines, central bank statements
+              │                                                            │
+              ▼                                                            ▼
+   ┌────────────────────┐   ┌─────────────────────────┐        ┌──────────────────────┐
+   │ features (no look- │──►│ Gaussian HMM, 3 regimes │        │ retrieval            │
+   │ ahead): vol, VIX,  │   │ walk-forward, refit     │        │ TF-IDF or embeddings │
+   │ returns, credit    │   │ yearly, forward filter  │        └──────────┬───────────┘
+   └────────────────────┘   └────────────┬────────────┘                   │ likely driver
+                                         │ regime                         │
+   daily changes ───────────────────────►▼                                ▼
+                            ┌─────────────────────────┐        ┌──────────────────────┐
+                            │ z-score vs past vol in  │───────►│ fact sheet: Python   │
+                            │ the same regime         │ moves  │ computes every number│
+                            └─────────────────────────┘        └──────────┬───────────┘
+                                                                          ▼
+                                          ┌────────── retry with feedback ─┐
+                                          ▼                                │
+                                   ┌─────────────┐   fail   ┌──────────────┴──┐
+                                   │ writer      │─────────►│ fact-checker    │──► pass: publish
+                                   │ (template / │          │ numbers, up/down│
+                                   │  LLM)       │          │ regime name     │──► still failing:
+                                   └─────────────┘          └─────────────────┘    needs human review
 ```
 
-| Module | File | What it does |
-|---|---|---|
-| Data | `data/market.py`, `data/news.py` | 9 markets (S&P 500, Nifty 50, USD/INR, EUR/USD, gold, US 2Y and 10Y yields, US Baa credit spread, VIX) on one business-day calendar; headlines and statements in one table |
-| Regimes | `regimes.py` | Gaussian HMM on 4 features, refit yearly on an expanding window, forward-filtered probabilities |
-| Detector | `detector.py` | z-score of each move against past volatility in the same regime; two baselines; precision, recall and McNemar's test |
-| Retrieval | `retrieval.py` | Finds headlines that explain a flagged move; recall@k and MRR on labelled days |
-| Generation | `generation/` | Pydantic fact sheet, LangGraph write and check loop, four writers (template, Ollama, Groq, fine-tuned model) |
-| Fact-checker | `generation/factcheck.py` | Every number must belong to a market named in its sentence; checks up/down direction and regime name |
-| Fine-tuning | `finetune/` | Distils a large model's fact-checked briefs into a small model with Unsloth LoRA |
+![S&P 500 coloured by out-of-sample regime](docs/images/regimes_real.png)
 
-## Design decisions
+The chart is the S&P 500 from late 2010 to November 2026, coloured by the regime the model
+assigned on each day using only data up to that day. The stressed regime (red) shows up in
+mid 2011, from the March 2020 crash through most of 2020, in parts of 2022, and in April 2025.
+The Q4 2018 selloff only reached the normal regime (yellow). The model also stays in the
+stressed regime for months into the 2020 recovery, which is the lag you pay for a filter that
+cannot see the future.
 
-**No look-ahead anywhere.** hmmlearn's `predict` and `predict_proba` use the full sequence, so the label for March 2020 would use April 2020 data. `RegimeModel.filter_proba` runs the forward algorithm only. Every volatility estimate is shifted by one day. `tests/test_no_lookahead.py` changes future data and asserts that past outputs stay identical; one test also shows that the smoothed probabilities do change, which is why the filter exists.
+## Features
 
-**Regime labels are stable across refits.** HMM states come out in random order. They are sorted by the mean of 20-day realised volatility, so state 0 is always the calmest.
-
-**Python computes, the LLM writes.** The model receives pre-formatted strings (`-3.04%`, `+12.5bp`) and is told not to calculate. This turns number errors into copying errors, which a checker can catch.
-
-**The fact-checker is tested, not trusted.** `generation/checker_eval.py` plants errors in briefs that passed (changed numbers, flipped directions, wrong regime) and measures how many it catches.
-
-**Unrelated news is dropped.** A headline below `retrieval.min_score` is not shown to the writer. Otherwise the brief would attach a cause to a move from whatever headline ranked first.
-
-**Fine-tuning data is split by time.** The student model trains on days before the split date and is evaluated only on days after it.
-
-## Quick start (synthetic data, no API keys)
-
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-pip install -e .
-
-python -m marketpulse.cli all --demo     # about 30 seconds
-pytest                                   # 16 tests
-streamlit run app/streamlit_app.py
-```
-
-Reports go to `reports/demo/`. The demo data is synthetic: it checks that the code works and nothing more.
-
-## Running on real data
-
-1. Get a free FRED API key at fred.stlouisfed.org, copy `.env.example` to `.env`, and add the key.
-2. Optional: save central bank statements as `data/raw/statements/YYYY-MM-DD_fed.txt` (or `_rbi`, `_ecb`), copied from the official sites.
-3. Run the steps:
-
-```bash
-python -m marketpulse.cli data --no-news        # prices from Sep 2007 (Nifty history starts then), about 2 minutes
-python -m marketpulse.cli news                  # GDELT headlines, last year, about 25 minutes, resumable
-python -m marketpulse.cli regimes --select      # BIC for 2 to 5 states on the first 60% of data
-python -m marketpulse.cli detect
-python -m marketpulse.cli label-sheet           # writes data/labels/to_label_real.csv
-```
-
-4. Label the sheet (see below), then:
-
-```bash
-python -m marketpulse.cli brief --date 2024-08-05 --backend ollama
-python -m marketpulse.cli evaluate --backend ollama --n-briefs 30
-```
-
-For `--backend ollama`, install Ollama and pull the model named in `configs/config.yaml`. For `groq`, add `GROQ_API_KEY` to `.env`. Model names change often; check what is current before you run.
-
-## Labelling
-
-Real markets have no answer key, so you build one. This is the most valuable part of the project and the part a copied repo cannot have.
-
-**Detector labels.** `label-sheet` writes every row any detector flagged in the period you have news for (`news.years`, 1 year by default), plus 150 random unflagged rows, shuffled so you cannot tell which is which. For each row, read that day's news and set `notable` to 1 if a desk analyst would have mentioned the move, else 0. Save as `data/labels/notable_moves.csv`. Write down your rule for "notable" before you start, and keep it fixed.
-
-**Retrieval labels.** For about 100 notable moves, find the headline that explains it and save `data/labels/retrieval_labels.csv` with columns `date, instrument, relevant_url`.
+| Area | What I implemented |
+|------|--------------------|
+| Data | 9 markets from FRED and Yahoo Finance on one business-day calendar; check that warns when one series cuts the history of all others |
+| Regimes | Gaussian HMM on 4 features (5-day S&P return, 20-day realised vol, log VIX, 20-day change in Baa credit spread), refit yearly on an expanding window |
+| No look-ahead | Own forward-algorithm filter instead of hmmlearn's `predict` / `predict_proba`, which use the whole sequence; every volatility estimate shifted by one day |
+| Stable labels | HMM states sorted by mean volatility after every refit, so state 0 is always the calmest |
+| Detector | z-score of each move against past volatility in the same regime; rolling-volatility and fixed-threshold baselines; precision, recall, McNemar's test |
+| News | GDELT DOC API in one OR query per 3-day chunk, with pauses, retries, resumable cache, newest days first |
+| Retrieval | TF-IDF baseline and sentence-transformer embeddings; recall@k and MRR on labelled days; low-scoring headlines dropped so the brief does not invent a cause |
+| Briefs | Pydantic fact sheet, LangGraph write → check → retry loop, writers: template, Ollama, Groq, fine-tuned model |
+| Fact-checker | Every number must belong to a market named in the same sentence; up/down words checked against the sign; regime name checked |
+| Fine-tuning | Distillation dataset filtered by the fact-checker, Unsloth LoRA script, train/test split by date |
+| CI | GitHub Actions runs 16 tests and the full demo pipeline on every push |
 
 ## Results
 
+All results below are on real data: 4,985 business days from 2007-09-17 to 2026-11-10.
+Out-of-sample regime predictions start in late 2010, after 3 years of training data, so the
+2008 crisis is in the training window only.
+
+### Regimes
+
+| Regime | Share of out-of-sample days | S&P 500 realised vol | VIX (approx.) | Baa spread, 20-day change | Expected duration |
+|--------|-----------------------------|----------------------|---------------|---------------------------|-------------------|
+| calm | 63 % | 9.4 % | 14 | −3.7 bp | 62 days |
+| normal | 30 % | 16.5 % | 20 | +2.1 bp | 38 days |
+| stressed | 7 % | 34.9 % | 33 | +4.7 bp | 57 days |
+
+Nobody told the model that volatility and credit spreads rise together in stress. It found
+that from the data.
+
+**How many regimes?** BIC on the first 60 % of the data kept falling from 2 to 5 states
+(20,294 → 16,813 → 14,875 → 14,370). That does not mean 5 states are right. Daily returns
+have much fatter tails than a normal distribution, so a Gaussian HMM keeps adding states to
+explain the extreme days. I chose 3 because the profiles are clearly different and easy to
+interpret.
+
+### Unusual moves
+
+| Detector | Cells flagged (4,209 days × 9 markets) |
+|----------|----------------------------------------|
+| Regime-conditional z-score, \|z\| ≥ 2.5 | 1,054 (2.8 %) |
+| Rolling 252-day z-score, \|z\| ≥ 2.5 | 1,065 |
+| Fixed size (1.5 % or 10 bp) | 5,254 |
+
+Under a normal distribution about 1.2 % of cells would pass \|z\| ≥ 2.5, so 2.8 % is another
+sign of fat tails. The two z-score detectors flag almost the same number of cells; whether they
+flag the *same* moves, and which one a desk analyst would agree with, is what the hand labels
+will answer.
+
+![Brief for 5 November 2026](docs/images/brief_2026-11-05.png)
+
+On 5 November 2026 the detector flagged three moves: VIX +52.86 % (z 5.3), S&P 500 −4.45 %
+(z −4.3) and Nifty 50 +2.38 % (z 2.5), and the regime switched from calm to normal. The brief
+above passed the fact check on the first attempt. It comes from the template writer; the news
+download for that week was not finished yet, so it says no clear driver was found instead of
+guessing one.
+
+### Does the fact-checker catch errors?
+
+I took briefs that passed and planted errors in them: a changed number, a flipped direction
+word (rose ↔ fell), or a wrong regime name.
+
+| Error type | Planted | Caught | Catch rate |
+|------------|---------|--------|------------|
+| Changed number | 90 | 89 | 98.9 % |
+| Flipped direction | 90 | 90 | 100 % |
+| Wrong regime | 90 | 90 | 100 % |
+
+My first version only checked that each number existed somewhere in the facts, and it caught
+80 of 90 planted number errors: a changed value sometimes matched another market's number.
+I changed it so a number must belong to a market named in the same sentence. A swap between
+markets listed in the same sentence ("Elsewhere: ...") can still get through.
+
 ### Sanity check on synthetic data
 
-These numbers show the code recovers structure that was planted on purpose. They are not findings about markets.
+Before trusting the models on real data I ran them on synthetic data with known regimes and
+60 planted shocks.
 
 | Check | Result |
-|---|---|
-| Out-of-sample regime accuracy (3 states, majority class is 50.3%) | 75.0% |
+|-------|--------|
+| Out-of-sample regime accuracy (majority class 50.3 %) | 75.0 % |
 | Detector F1: regime / rolling / fixed | 0.202 / 0.134 / 0.027 |
-| McNemar, regime vs rolling detector | regime right where rolling wrong on 351 cells, opposite on 109, p < 0.001 |
-| Fact-checker catch rate: numbers / direction / regime | 98.9% / 100% / 100% (90 planted errors each) |
+| McNemar, regime vs rolling detector | regime right and rolling wrong on 351 cells, opposite on 109, p < 0.001 |
+| Same model with the 10s2s curve slope added | accuracy drops to 45.0 % |
 
-The regime detector wins mainly by raising fewer false alarms (375 flags against 621), while catching 2 fewer planted shocks (43 against 45). Adding the 10s2s curve slope as a feature dropped regime accuracy from 75.0% to 45.0%, below the 50.3% majority baseline: a slow-moving level lets the HMM split history by era instead of by stress.
+The curve slope moves slowly, so with it the HMM split the sample by time period instead of
+by stress. I removed it from the default features.
 
-### Real data
+## How to run
 
-[Fill in after running on real data and labelling. Do not copy numbers from the synthetic run.]
+**Live app**
+Open https://marketpulse-mahendra.streamlit.app, choose `real` in the sidebar, pick a date,
+and press **Generate brief**.
 
-| Check | Result |
-|---|---|
-| Number of regimes chosen by BIC | |
-| Detector precision / recall: regime vs rolling vs fixed | |
-| McNemar p-value, regime vs rolling | |
-| Retrieval recall@3: TF-IDF vs embeddings | |
-| Brief first-try pass rate: prompted model vs fine-tuned model | |
-| Mean human rating (docs/rubric.md) | |
+**Local demo** (synthetic data, no API keys)
+```bash
+python -m venv .venv
+.venv\Scripts\activate              # Linux / macOS: source .venv/bin/activate
+pip install -r app/requirements.txt pytest tabulate yfinance fredapi gdeltdoc feedparser python-dotenv
+pip install -e .
+python -m marketpulse.cli all --demo
+pytest
+streamlit run app/streamlit_app.py
+```
 
-## Limitations
+**Real data** (free FRED key in `.env`, see `.env.example`)
+```bash
+python -m marketpulse.cli data --no-news     # prices, about 2 minutes
+python -m marketpulse.cli regimes --select   # walk-forward HMM, BIC for 2 to 5 states
+python -m marketpulse.cli detect             # z-scores and flags
+python -m marketpulse.cli news               # GDELT headlines, resumable
+python -m marketpulse.cli brief --backend template
+```
 
-- The fact-checker verifies numbers, direction words and the regime name. It cannot tell whether a stated cause is true. A brief can pass and still give a wrong reason for a move.
-- In a sentence that names several markets, numbers can be swapped among those markets without being caught. That is where the missed planted number error came from.
-- Detector labels come from one person's judgment of what is notable.
-- GDELT coverage varies by source and period. Headlines only; no article bodies.
-- A Gaussian HMM assumes normal returns within each regime. Real returns have fatter tails.
-- The credit input is Moody's Baa spread (BAA10Y), not the ICE BofA high-yield spread: since April 2026 FRED serves only 3 years of ICE index history. Baa is investment grade, so it reacts less than high yield in stress.
+**Labelling and evaluation**
+```bash
+python -m marketpulse.cli label-sheet        # flagged rows + random rows, shuffled
+# fill `notable` with 1/0, save as data/labels/notable_moves.csv
+python -m marketpulse.cli evaluate --backend template
+```
 
 ## Project structure
 
 ```
-configs/config.yaml          every setting: markets, features, thresholds, models
-src/marketpulse/
-  data/market.py             FRED and Yahoo Finance download, calendar alignment
-  data/news.py               GDELT, RSS, local statements
-  data/synthetic.py          regime-switching demo data with planted shocks
-  features.py                regime features
-  regimes.py                 HMM, forward filter, walk-forward, BIC
-  detector.py                z-scores, baselines, evaluation, labelling sheet
-  retrieval.py               TF-IDF and embedding retrieval, recall@k
-  generation/facts.py        Pydantic fact sheet
-  generation/factcheck.py    number, direction and regime checks
-  generation/checker_eval.py planted-error test of the checker
-  generation/writers.py      template, Ollama, Groq, Hugging Face writers
-  generation/brief.py        LangGraph write and check loop
-  pipeline.py, cli.py        steps and command line
-app/streamlit_app.py         demo app
-finetune/                    dataset builder and Unsloth LoRA training script
-notebooks/                   exploration notebook
-tests/                       leakage, fact-checker and model tests
-docs/                        roadmap, experiment log, rating rubric
+marketpulse/
+├── configs/config.yaml               markets, features, thresholds, models
+├── src/marketpulse/
+│   ├── data/market.py                FRED + Yahoo download, calendar alignment, coverage check
+│   ├── data/news.py                  GDELT (rate-limit aware, cached), RSS, statements
+│   ├── data/synthetic.py             regime-switching demo data with planted shocks
+│   ├── features.py                   regime features
+│   ├── regimes.py                    HMM, forward filter, walk-forward, BIC
+│   ├── detector.py                   z-scores, baselines, evaluation, labelling sheet
+│   ├── retrieval.py                  TF-IDF / embedding retrieval, recall@k
+│   ├── generation/facts.py           Pydantic fact sheet
+│   ├── generation/factcheck.py       number, direction and regime checks
+│   ├── generation/checker_eval.py    planted-error test of the checker
+│   ├── generation/writers.py         template, Ollama, Groq, Hugging Face writers
+│   ├── generation/brief.py           LangGraph write → check → retry loop
+│   └── pipeline.py, cli.py           steps and command line
+├── app/streamlit_app.py              the live app
+├── finetune/                         distillation dataset builder, Unsloth LoRA training
+├── tests/                            leakage, fact-checker and model tests
+├── docs/                             roadmap, experiment log, rating rubric, images
+└── .github/workflows/ci.yml          tests + demo pipeline on every push
 ```
+
+## Design notes
+
+- **Filtered, not smoothed, regimes.** hmmlearn's `predict_proba` runs forward-backward over
+  the whole sequence, so the probability for March 2020 would use April 2020 data. I wrote the
+  forward pass myself. `tests/test_no_lookahead.py` changes future data and checks that past
+  outputs stay identical, and one test shows that the smoothed probabilities do change.
+- **Python computes, the writer only writes.** The writer gets strings such as `-4.45%` and
+  `+5.0bp` and is told not to calculate. That turns number errors into copying errors, which a
+  checker can catch.
+- **A brief that keeps failing is not thrown away.** After the retries it is marked
+  `needs_review`, so a person decides.
+- **Unrelated news is worse than no news.** Headlines below a retrieval score threshold are
+  dropped, otherwise the brief would attach a cause from whatever ranked first.
+- **Baa spread instead of the high-yield spread.** Since April 2026 FRED serves only 3 years of
+  ICE BofA index history. My first real download came back with 782 days instead of 19 years,
+  because that one series cut every other series to its start date. I switched to Moody's Baa
+  spread (`BAA10Y`), available daily since 1986, and added a check that prints the first date
+  of every series.
+- **GDELT is rate-limited.** One OR query per 3-day chunk, a pause after every request, a
+  cache so a stopped run resumes, and an early stop when the server keeps refusing.
+
+## Limitations and next steps
+
+- The fact-checker verifies numbers, direction and regime name. It cannot tell whether a
+  stated cause is true, so a brief can pass and still give the wrong reason for a move.
+- A Gaussian HMM assumes normal returns within each regime; real returns have fatter tails.
+- Baa is investment grade, so it reacts less in stress than the high-yield spread would.
+- The detector labels will come from one person's judgment of what is notable.
+- Next: finish the news download, hand-label the last 12 months, and report detector
+  precision / recall and retrieval recall@3; compare an LLM writer (Ollama / Groq) with the
+  template on first-try pass rate; then fine-tune a small model on fact-checked briefs and
+  test it on dates after the training period.
+
+Experiment log: [docs/experiment_log.md](docs/experiment_log.md)
