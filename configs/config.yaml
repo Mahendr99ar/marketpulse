@@ -99,7 +99,7 @@ news:
   # articles per request, so broad words crowd out market news.
   gdelt_keywords: ["federal reserve", "treasury yields", "stock market", "rupee",
                    "Reserve Bank of India", "inflation", "oil prices"]
-  years: 1                 # how much news history to download (1 year = about 25 minutes)
+  years: 0.25                 # how much news history to download (1 year = about 25 minutes)
   chunk_days: 3            # days per request
   pause_seconds: 12        # GDELT allows about one request every 5 seconds; extra margin avoids blocks
   rss_feeds: []            # add feed URLs you are allowed to use
