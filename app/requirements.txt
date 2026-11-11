@@ -1,0 +1,17 @@
+# Light dependency list for Streamlit Community Cloud.
+# Cloud reads this file (next to the app) instead of the root requirements.txt,
+# so the server does not install torch, sentence-transformers or mlflow.
+numpy
+pandas
+scipy
+scikit-learn
+statsmodels
+hmmlearn
+pydantic
+pyyaml
+pyarrow
+langgraph
+langchain-core
+langchain-groq
+plotly
+streamlit

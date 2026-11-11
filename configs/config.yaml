@@ -1,0 +1,122 @@
+# MarketPulse configuration
+# Every module reads from this file. Change values here, not in code.
+
+start_date: "2005-01-01"
+end_date: null            # null = today
+
+paths:
+  raw: data/raw
+  processed: data/processed
+  labels: data/labels
+  reports: reports
+
+# Instruments that appear in the daily brief.
+# kind: "price" -> change is a % log return
+#       "rate"  -> value is already in %, change is in basis points (bp)
+instruments:
+  - id: SPX
+    name: S&P 500
+    source: yfinance
+    ticker: "^GSPC"
+    kind: price
+    aliases: ["S&P 500", "S&P", "US stocks", "US equities"]
+  - id: NIFTY
+    name: Nifty 50
+    source: yfinance
+    ticker: "^NSEI"
+    kind: price
+    aliases: ["Nifty 50", "Nifty", "Indian stocks", "Indian equities"]
+  - id: USDINR
+    name: USD/INR
+    source: yfinance
+    ticker: "INR=X"
+    kind: price
+    aliases: ["USD/INR", "rupee", "dollar-rupee"]
+  - id: EURUSD
+    name: EUR/USD
+    source: yfinance
+    ticker: "EURUSD=X"
+    kind: price
+    aliases: ["EUR/USD", "euro"]
+  - id: GOLD
+    name: Gold
+    source: yfinance
+    ticker: "GC=F"
+    kind: price
+    aliases: ["Gold"]
+  - id: UST2Y
+    name: US 2Y yield
+    source: fred
+    ticker: DGS2
+    kind: rate
+    aliases: ["US 2Y yield", "2-year yield", "2-year Treasury", "2Y yield"]
+  - id: UST10Y
+    name: US 10Y yield
+    source: fred
+    ticker: DGS10
+    kind: rate
+    aliases: ["US 10Y yield", "10-year yield", "10-year Treasury", "10Y yield"]
+  - id: CREDIT
+    name: US Baa credit spread
+    source: fred
+    ticker: BAA10Y         # Moody's Baa yield minus 10Y Treasury, daily since 1986.
+                           # Not the ICE BofA HY spread: FRED keeps only 3 years of ICE series since April 2026.
+    kind: rate
+    aliases: ["US Baa credit spread", "Baa credit spread", "Baa spread", "credit spreads", "credit spread", "corporate bond spreads"]
+  - id: VIX
+    name: VIX
+    source: fred
+    ticker: VIXCLS
+    kind: price
+    aliases: ["VIX"]
+
+# Inputs to the regime model. Built in features/build.py.
+regime:
+  n_states: 3              # try 2-5 and compare BIC (cli: regimes --select)
+  min_train_days: 756      # about 3 years before the first out-of-sample prediction
+  refit_every_days: 252    # refit once a year on an expanding window
+  random_state: 42
+  features:
+    - spx_ret_5d           # 5-day S&P 500 log return
+    - spx_vol_20d          # 20-day realised vol, annualised
+    - log_vix              # log VIX level
+    - credit_chg_20d       # 20-day change in Baa credit spread (bp)
+    # - curve_10s2s        # 10Y minus 2Y (bp). Try it as an experiment. It is a slow-moving
+    #                        level, so the HMM may split history by era instead of by stress.
+    #                        On the demo data adding it drops regime accuracy from 75% to 45%.
+
+detector:
+  z_threshold: 2.5         # |z| above this = unusual
+  lookback_days: 750       # history used to estimate regime-conditional vol
+  min_obs: 30              # minimum same-regime days before a z-score is trusted
+  baseline_rolling_days: 252
+  fixed_thresholds:        # naive baseline: absolute size of move
+    price: 1.5             # %
+    rate: 10.0             # bp
+
+news:
+  # One OR query per chunk. Keep keywords specific: GDELT returns at most 250
+  # articles per request, so broad words crowd out market news.
+  gdelt_keywords: ["federal reserve", "treasury yields", "stock market", "rupee",
+                   "Reserve Bank of India", "inflation", "oil prices"]
+  years: 1                 # how much news history to download (1 year = about 25 minutes)
+  chunk_days: 3            # days per request
+  pause_seconds: 12        # GDELT allows about one request every 5 seconds; extra margin avoids blocks
+  rss_feeds: []            # add feed URLs you are allowed to use
+  window_days: 1           # news from day t-1 and day t is searched for move on day t
+
+retrieval:
+  backend: tfidf           # tfidf (baseline, no GPU) or embeddings
+  embedding_model: BAAI/bge-small-en-v1.5
+  top_k: 5
+  min_score: 0.15          # headlines scoring below this are dropped ("no clear driver").
+                           # Scale differs by backend: tune it on your labelled days.
+
+generation:
+  backend: template        # template | ollama | groq | hf
+  ollama_model: qwen2.5:7b-instruct
+  groq_model: llama-3.1-8b-instant
+  hf_model_path: finetune/outputs/marketpulse-lora-merged
+  temperature: 0.2
+  max_retries: 2
+  max_movers_in_brief: 5

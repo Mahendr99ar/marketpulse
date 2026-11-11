@@ -1,0 +1,37 @@
+# Core (needed for everything, including demo mode and tests)
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+scikit-learn>=1.4
+statsmodels>=0.14
+hmmlearn>=0.3.2
+pydantic>=2.5
+pyyaml>=6.0
+pyarrow>=14.0
+langgraph>=0.2
+langchain-core>=0.3
+pytest>=8.0
+tabulate>=0.9
+
+# Real data
+yfinance>=0.2.40
+fredapi>=0.5.1
+gdeltdoc>=1.5
+feedparser>=6.0
+python-dotenv>=1.0
+
+# Baselines and charts
+arch>=6.3
+plotly>=5.20
+streamlit>=1.35
+
+# Embedding retrieval (only if retrieval.backend = embeddings)
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+
+# LLM backends (install the one you use)
+langchain-ollama>=0.2
+langchain-groq>=0.2
+
+# Optional experiment tracking
+mlflow>=2.12
