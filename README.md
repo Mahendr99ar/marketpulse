@@ -100,9 +100,44 @@ interpret.
 | Fixed size (1.5 % or 10 bp) | 5,254 |
 
 Under a normal distribution about 1.2 % of cells would pass \|z\| ≥ 2.5, so 2.8 % is another
-sign of fat tails. The two z-score detectors flag almost the same number of cells; whether they
-flag the *same* moves, and which one a desk analyst would agree with, is what the hand labels
-will answer.
+sign of fat tails. The two z-score detectors flag almost the same number of cells, so the hand
+labels below check whether they flag the moves that actually mattered.
+
+### Unusual moves against hand labels
+
+The labelling sheet covers 10 August to 10 November 2026: every cell flagged by any detector,
+plus a random sample of unflagged cells, 198 rows in total. A move counts as notable only if
+news from that day reports the move or its cause, such as the 17 bp fall in the 10-year yield
+on 22 October or the S&P 500 drop of 4.45 % on 5 November. Size alone was not enough. 31 of
+the 198 rows are labelled notable. Each row has a one-line note with the reason
+(`data/labels/notable_moves.csv`).
+
+The random rows stand in for all unflagged cells, so each one carries a sampling weight. That
+is why the false-negative counts are not whole numbers. Without the weights, recall would be
+overstated.
+
+| Detector | Flags | TP | FP | FN (weighted) | Precision | Recall | F1 |
+|----------|-------|----|----|---------------|-----------|--------|----|
+| Regime-conditional z-score | 21 | 16 | 5 | 19.1 | 0.762 | 0.456 | 0.571 |
+| Rolling 252-day z-score | 21 | 15 | 6 | 20.1 | 0.714 | 0.428 | 0.535 |
+| Fixed size threshold | 92 | 28 | 64 | 7.0 | 0.304 | 0.799 | 0.441 |
+
+McNemar's test on the labelled cells:
+
+- regime vs rolling: regime right and rolling wrong on 7 cells, the opposite on 5, p = 0.77
+- regime vs fixed: regime right and fixed wrong on 64 cells, the opposite on 17, p < 0.001
+
+Both z-score detectors beat the fixed threshold. The fixed rule catches more of the notable
+moves, but about 7 in 10 of its flags are not notable. The regime detector scores a little
+higher than the rolling one, but the gap is 2 cells out of 12 disagreements. That is not a
+significant difference, so on this sample I cannot claim regime conditioning helps. The
+synthetic test below does show a significant gap; three months of real data is too short to
+confirm it.
+
+The labelling turned up one data problem. Yahoo shows USD/INR −2.3 % on 26 August and +2.0 %
+the next day. I found no news of a rupee move that size; the RBI was holding the rupee near
+its record low at the time. Both rows are labelled 0 as a probable data error. A real
+detector should check for a move that reverses the next day before alerting on it.
 
 ![Brief for 5 November 2026](docs/images/brief_2026-11-05.png)
 
@@ -114,12 +149,12 @@ guessing one.
 
 ### Does the fact-checker catch errors?
 
-I took briefs that passed and planted errors in them: a changed number, a flipped direction
-word (rose ↔ fell), or a wrong regime name.
+I took 30 real-data briefs that passed and planted errors in them: a changed number, a flipped
+direction word (rose ↔ fell), or a wrong regime name.
 
 | Error type | Planted | Caught | Catch rate |
 |------------|---------|--------|------------|
-| Changed number | 90 | 89 | 98.9 % |
+| Changed number | 90 | 88 | 97.8 % |
 | Flipped direction | 90 | 90 | 100 % |
 | Wrong regime | 90 | 90 | 100 % |
 
@@ -229,9 +264,12 @@ marketpulse/
   stated cause is true, so a brief can pass and still give the wrong reason for a move.
 - A Gaussian HMM assumes normal returns within each regime; real returns have fatter tails.
 - Baa is investment grade, so it reacts less in stress than the high-yield spread would.
-- The detector labels will come from one person's judgment of what is notable.
-- Next: finish the news download, hand-label the last 12 months, and report detector
-  precision / recall and retrieval recall@3; compare an LLM writer (Ollama / Groq) with the
+- The detector labels cover only 3 months and 31 notable moves. I did the news research for
+  them with an AI assistant and then reviewed them myself, so they reflect one judgment of what
+  counts as notable. Moves in the Baa spread rarely had news of their own and were mostly
+  labelled 0.
+- Next: label a longer period so the regime vs rolling comparison has enough cells to test,
+  label retrieval relevance and report recall@3, compare an LLM writer (Ollama / Groq) with the
   template on first-try pass rate; then fine-tune a small model on fact-checked briefs and
   test it on dates after the training period.
 
