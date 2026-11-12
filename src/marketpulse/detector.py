@@ -89,23 +89,27 @@ def flagged_moves(changes: pd.DataFrame, z: pd.DataFrame, flags: pd.DataFrame) -
 # ---------------- evaluation ----------------
 
 def _lookup(flags: pd.DataFrame, labels: pd.DataFrame) -> np.ndarray:
-    return np.array([bool(flags.at[pd.Timestamp(d), i]) for d, i in zip(labels["date"], labels["instrument"])])
+    return np.array([bool(flags.at[pd.Timestamp(d), i]) for d, i in zip(labels["date"], labels["instrument"])],
+                    dtype=bool)
 
 
 def evaluate_flags(flags_by_method: dict[str, pd.DataFrame], labels: pd.DataFrame) -> pd.DataFrame:
     """Precision / recall / F1 on labelled (date, instrument, notable) rows."""
     labels = labels[labels["date"].isin(next(iter(flags_by_method.values())).index)]
     y = labels["notable"].astype(bool).to_numpy()
+    w = labels["weight"].to_numpy(float) if "weight" in labels else np.ones(len(labels))
     rows = []
     for name, flags in flags_by_method.items():
         pred = _lookup(flags, labels)
-        tp = int((pred & y).sum())
-        fp = int((pred & ~y).sum())
-        fn = int((~pred & y).sum())
+        # weighted counts estimate the counts over all cells in the period, not just the sample
+        tp = float(w[pred & y].sum())
+        fp = float(w[pred & ~y].sum())
+        fn = float(w[~pred & y].sum())
         precision = tp / (tp + fp) if tp + fp else 0.0
         recall = tp / (tp + fn) if tp + fn else 0.0
         f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-        rows.append({"method": name, "flags": int(pred.sum()), "tp": tp, "fp": fp, "fn": fn,
+        rows.append({"method": name, "flags": int(pred.sum()), "tp": round(tp, 1), "fp": round(fp, 1),
+                     "fn": round(fn, 1),
                      "precision": precision, "recall": recall, "f1": f1})
     return pd.DataFrame(rows).set_index("method")
 
@@ -150,5 +154,10 @@ def labelling_sheet(changes: pd.DataFrame, flags_by_method: dict[str, pd.DataFra
     sheet["change"] = [round(changes.at[d, i], 3) for d, i in rows]
     sheet["notable"] = ""
     sheet["note"] = ""
+    # Inverse sampling probability: every flagged row is labelled (weight 1); each random
+    # unflagged row stands for len(unflagged) / len(pick) rows. Without this, recall is
+    # overstated because missed notable moves are under-sampled.
+    w_unflagged = len(unflagged) / max(len(pick), 1)
+    sheet["weight"] = [1.0] * len(flagged) + [w_unflagged] * len(pick)
     # shuffle so you cannot tell which rows were flagged while labelling
     return sheet.sample(frac=1.0, random_state=seed).reset_index(drop=True)

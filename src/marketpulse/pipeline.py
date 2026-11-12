@@ -164,8 +164,29 @@ def step_label_sheet(cfg: Config, dataset: str, n_random: int = 150) -> Path:
     cutoff = flags["regime"].index.max() - pd.DateOffset(months=int(12 * cfg["news"].get("years", 1)))
     flags = {k: v.loc[cutoff:] for k, v in flags.items()}
     sheet = labelling_sheet(store.load("changes"), flags, n_random=n_random)
+
+    # Context for the person labelling: market name, unit, and the top headlines of that day.
+    # Nothing here says which detector flagged the row, so the labels stay blind.
+    sheet.insert(2, "market", [cfg.instrument(i).name for i in sheet["instrument"]])
+    sheet.insert(4, "unit", [cfg.instrument(i).unit for i in sheet["instrument"]])
+    retriever = _retriever(cfg, store.load("news"))
+    if retriever is not None:
+        from marketpulse.retrieval import move_query
+
+        heads = []
+        for d, inst, ch in zip(sheet["date"], sheet["instrument"], sheet["change"]):
+            hits = retriever.query(move_query(inst, ch, cfg), d, cfg["news"]["window_days"], k=3)
+            heads.append(" | ".join(hits["title"].tolist()))
+        sheet["headlines"] = heads
+    # sorted by date so you can read one day's news once for all its rows
+    sheet = sheet.sort_values(["date", "market"]).reset_index(drop=True)
+    sheet["date"] = pd.to_datetime(sheet["date"]).dt.strftime("%Y-%m-%d")
+    # weights go to a separate file: in the sheet they would reveal which rows were flagged
+    weights = sheet[["date", "instrument", "weight"]]
+    weights.to_csv(cfg.path("labels") / f"sample_weights_{dataset}.csv", index=False)
+    sheet = sheet.drop(columns=["weight"])
     out = cfg.path("labels") / f"to_label_{dataset}.csv"
-    sheet.to_csv(out, index=False)
+    sheet.to_csv(out, index=False, encoding="utf-8-sig")  # utf-8-sig: Excel shows symbols correctly
     print(f"[labels] {len(sheet)} rows -> {out}. Fill 'notable' with 1/0, save as notable_moves.csv")
     return out
 
@@ -311,11 +332,17 @@ def step_evaluate(cfg: Config, dataset: str, backend: str | None = None, n_brief
 
 
 def _detector_labels(cfg, store, changes, flags_regime):
+    # hand labels are for real market dates; the demo data has its own planted shocks
     path = cfg.path("labels") / "notable_moves.csv"
-    if path.exists():
+    if path.exists() and not store.exists("true_shocks"):
         lab = pd.read_csv(path, parse_dates=["date"])
-        lab = lab[lab["notable"].astype(str).isin(["0", "1"])]
-        lab["notable"] = lab["notable"].astype(int)
+        lab = lab[lab["notable"].astype(str).str.strip().isin(["0", "1", "0.0", "1.0"])]
+        lab["notable"] = lab["notable"].astype(float).astype(int)
+        wpath = cfg.path("labels") / f"sample_weights_{store.dir.name}.csv"
+        if wpath.exists():
+            w = pd.read_csv(wpath, parse_dates=["date"])
+            lab = lab.drop(columns=["weight"], errors="ignore").merge(w, on=["date", "instrument"], how="left")
+            lab["weight"] = lab["weight"].fillna(1.0)
         return lab
     if store.exists("true_shocks"):  # demo: every scored cell is labelled
         shocks = store.load("true_shocks")

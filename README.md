@@ -66,7 +66,7 @@ cannot see the future.
 | Briefs | Pydantic fact sheet, LangGraph write → check → retry loop, writers: template, Ollama, Groq, fine-tuned model |
 | Fact-checker | Every number must belong to a market named in the same sentence; up/down words checked against the sign; regime name checked |
 | Fine-tuning | Distillation dataset filtered by the fact-checker, Unsloth LoRA script, train/test split by date |
-| CI | GitHub Actions runs 16 tests and the full demo pipeline on every push |
+| CI | GitHub Actions runs 17 tests and the full demo pipeline on every push |
 
 ## Results
 
